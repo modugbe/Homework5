@@ -1,0 +1,158 @@
+# Preliminaries -----------------------------------------------------------
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, ggplot2, dplyr, lubridate, stringr, readxl, data.table, gdata, fixest, scales)
+
+
+# Read data and set workspace for knitr -------------------------------
+acs.insurance <- read.table('data/output/acs_insurance.txt', header = TRUE, fill = TRUE, sep = "\t")
+acs.medicaid <- read.table('data/output/acs_medicaid.txt', header = TRUE, fill = TRUE, sep = "\t")
+medicaid.expansion <- read.table('data/output/medicaid_expansion.txt', header = TRUE, fill = TRUE, sep = "\t")
+
+
+#number 1
+share_data <- acs.medicaid %>%
+                mutate(share_direct_purchase = (ins_direct/adult_pop)/100) 
+
+number1 <- ggplot(data = share_data, aes(x = year, y = share_direct_purchase)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Year", 
+      y = "Share of Adult Population with Direct Purchase Health Insurance",
+      title = "Trend of Share of Adult Population with Direct Purchase Health Insurance") +
+  theme_minimal()
+
+#number 3
+share_data <- acs.medicaid %>%
+                mutate(share_medicaid = (ins_medicaid/adult_pop)/100) 
+
+number3 <- ggplot(data = share_data, aes(x = year, y = share_medicaid)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Year", 
+      y = "Share of Adult Population with Medicaid",
+      title = "Trend of Share of Adult Population with Medicaid") +
+  theme_minimal()
+
+#number 4
+expansion_share_data <- acs.medicaid %>% 
+        filter(is.na(expand_year) | expand_year <=2014) %>%
+        mutate(share_uninsured = (uninsured/adult_pop)/100) %>%
+        mutate(medicaid_expansion = ifelse(expand_ever <= 2014, "Expanded in 2014",
+         "Did not expand in 2014"))
+
+number4 <- ggplot(data = expansion_share_data, aes(x = year, y = share_uninsured, fill = medicaid_expansion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Expanded in 2014" = "blue", "Did not expand" = "red")) +
+  labs(x = "Year", y = "Share of Uninsured", title = "Share of Uninsured Over Time by Medicaid Expansion Status")
+
+#number 5
+# Step 1: Filter the data for 2012 and 2015
+df_2012 <- acs.medicaid[acs.medicaid$year == 2012, ]
+df_2015 <- acs.medicaid[acs.medicaid$year == 2015, ]
+
+# Step 2: Separate the data into expansion and non-expansion states
+expansion_states <- acs.medicaid[acs.medicaid$expand_ever == TRUE, ]
+non_expansion_states <- acs.medicaid[acs.medicaid$expand_ever == FALSE, ]
+expansion_states <- expansion_states[complete.cases(expansion_states), ]
+non_expansion_states <- non_expansion_states[complete.cases(expansion_states), ]
+
+# Step 3: Calculate the average percent of uninsured individuals for each group in 2012 and 2015
+avg_uninsured_2012_exp <- mean(expansion_states$uninsured[acs.medicaid$year == 2012])
+avg_uninsured_2012_nonexp <- mean(non_expansion_states$uninsured[acs.medicaid$year == 2012])
+avg_uninsured_2015_exp <- mean(expansion_states$uninsured[acs.medicaid$year == 2015])
+avg_uninsured_2015_nonexp <- mean(non_expansion_states$uninsured[acs.medicaid$year == 2015])
+
+# Step 4: Present the results in a 2x2 table
+number5 <- matrix(c(avg_uninsured_2012_exp, avg_uninsured_2015_exp,
+                     avg_uninsured_2012_nonexp, avg_uninsured_2015_nonexp),
+                   nrow = 2, byrow = TRUE,
+                   dimnames = list(c("Expansion States", "Non-expansion States"),
+                                   c("2012", "2015")))
+
+
+#number 6
+library(tidyverse)
+library(modelsummary)
+
+acs.medicaid <- acs.medicaid %>% 
+    mutate(expand_ever_dummy = ifelse(expand_ever=="TRUE", 1, 0))
+
+reg.dat <- acs.medicaid %>% filter(expand_year==2014 | is.na(expand_year), !is.na(expand_ever)) %>%
+  mutate(perc_unins=uninsured/adult_pop,
+         post = (year>=2014), 
+         treat=post*expand_ever)
+
+dd.ins.reg <- lm(perc_unins ~ post + expand_ever_dummy + post*expand_ever_dummy, data=reg.dat)
+
+number6 <- modelsummary(list("DD (2014)"=dd.ins.reg),
+             shape=term + statistic ~ model, 
+             gof_map=NA,
+             coef_omit='Intercept',
+         )
+
+
+#number 7
+library(fixest)
+m.twfe <- feols(perc_unins ~ post + expand_ever_dummy + State + year | State, data = reg.dat)
+
+number7 <- msummary(list("DD"=dd.ins.reg, "TWFE"=m.twfe),
+         shape=term + statistic ~ model, 
+         gof_map=NA,
+         coef_omit='Intercept',
+         )
+
+
+#number 8
+reg.dat_all <- acs.medicaid %>% 
+  mutate(perc_unins = uninsured / adult_pop,
+         post = (year >= 2014), 
+         treat = post * expand_ever)
+
+# Run the regression with fixed effects
+dd.ins.reg_all <- feols(perc_unins ~ post + expand_ever_dummy + State + year | State, data = reg.dat_all)
+
+number8 <- msummary(list("TWFE7"=m.twfe, "TWFE8"=dd.ins.reg_all),
+         shape=term + statistic ~ model, 
+         gof_map=NA,
+         coef_omit='Intercept',
+         )
+
+
+#number 9
+library(tidyverse)
+library(modelsummary)
+library(fixest)
+reg.dat <- acs.medicaid %>% 
+  filter(expand_year==2014 | is.na(expand_year), !is.na(expand_ever)) %>%
+  mutate(perc_unins=uninsured/adult_pop,
+         post = (year>=2014), 
+         treat=post*expand_ever)
+
+mod.twfe <- feols(perc_unins~i(year, expand_ever, ref=2013) ,
+                  cluster=~State,
+                  data=reg.dat)
+
+number9 <- iplot(mod.twfe, 
+      xlab = 'Time to treatment',
+      main = 'Event study')
+
+
+#number 10
+reg.dat <- acs.medicaid %>% 
+  filter(!is.na(expand_ever)) %>%
+  mutate(perc_unins = uninsured / adult_pop,
+         post = year >= 2014,
+         expand_year = ifelse(is.na(expand_year), year, expand_year),
+         event_time = expand_year - 2014)  # Align all states to event time (2014)
+
+# Run the fixed effects regression with treatment effect
+mod.twfe <- feols(perc_unins ~ i(event_time, expand_ever), 
+                  cluster = ~State,
+                  data = reg.dat)
+
+# Create the event study plot
+number10 <- iplot(mod.twfe, 
+      xlab = 'Time to treatment',
+      main = 'Event study')
+
+rm(list=c("acs.insurance", "acs.medicaid",
+           "medicaid.expansion"))
+save.image("submission1/Hwk5_workspace.Rdata")
